@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IndijiSeal Verifier</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        max-width: 900px;
+        margin: 1rem auto;
+        padding: 0 1rem;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 16rem;
+        box-sizing: border-box;
+      }
+
+      img {
+        max-width: 320px;
+        max-height: 240px;
+      }
+
+      .ok {
+        color: green;
+      }
+
+      .bad {
+        color: darkred;
+      }
+
+      .value {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IndijiSeal Verifier</h1>
+
+    <p>
+      <input id="file-input" type="file" accept=".json,application/json" />
+    </p>
+
+    <textarea id="json-input" spellcheck="false"></textarea>
+
+    <h2>Verification</h2>
+    <p id="status">Enter verification JSON.</p>
+    <div id="signatures"></div>
+
+    <h2>Data</h2>
+    <div id="data"></div>
+
+    <script>
+      const fileInput = document.getElementById("file-input");
+      const jsonInput = document.getElementById("json-input");
+      const statusEl = document.getElementById("status");
+      const signaturesEl = document.getElementById("signatures");
+      const dataEl = document.getElementById("data");
+
+      let updateNumber = 0;
+
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files[0];
+        if (!file) {
+          return;
+        }
+        if (
+          !file.name.toLowerCase().endsWith(".json") &&
+          file.type !== "application/json"
+        ) {
+          showError("Please choose a JSON file.");
+          fileInput.value = "";
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.addEventListener("load", () => {
+          jsonInput.value = String(reader.result || "");
+          updateDisplay();
+        });
+        reader.addEventListener("error", () => {
+          showError("Could not read the selected file.");
+        });
+        reader.readAsText(file);
+      });
+
+      jsonInput.addEventListener("input", updateDisplay);
+
+      async function updateDisplay() {
+        const thisUpdate = ++updateNumber;
+        clearResults();
+
+        const text = jsonInput.value.trim();
+        if (!text) {
+          statusEl.textContent = "Enter verification JSON.";
+          return;
+        }
+
+        let verification;
+        try {
+          verification = JSON.parse(text);
+          validateVerificationJson(verification);
+        } catch (error) {
+          showError(error.message);
+          return;
+        }
+
+        renderData(verification.data);
+        if (!crypto.subtle) {
+          showError(
+            "This browser does not support WebCrypto signature verification.",
+          );
+          renderData(verification.data);
+          return;
+        }
+        statusEl.textContent = "Checking signatures...";
+
+        const messageBytes = new TextEncoder().encode(
+          JSON.stringify(verification.data),
+        );
+        const results = await Promise.all(
+          verification.signatures.map((signature) =>
+            verifySignature(signature, messageBytes),
+          ),
+        );
+
+        if (thisUpdate !== updateNumber) {
+          return;
+        }
+
+        renderSignatures(results);
+        if (results.length === 0) {
+          statusEl.textContent = "No signatures found.";
+          statusEl.className = "bad";
+          return;
+        }
+
+        const failedCount = results.filter((result) => !result.verified).length;
+        if (failedCount === 0) {
+          statusEl.textContent = "All signatures verified.";
+          statusEl.className = "ok";
+        } else {
+          statusEl.textContent =
+            failedCount + " signature(s) failed verification.";
+          statusEl.className = "bad";
+        }
+      }
+
+      function validateVerificationJson(verification) {
+        if (
+          !verification ||
+          typeof verification !== "object" ||
+          Array.isArray(verification)
+        ) {
+          throw new Error("The JSON must be an object.");
+        }
+        if (
+          !verification.data ||
+          typeof verification.data !== "object" ||
+          Array.isArray(verification.data)
+        ) {
+          throw new Error('The JSON must contain a "data" object.');
+        }
+        if (!Array.isArray(verification.signatures)) {
+          throw new Error('The JSON must contain a "signatures" array.');
+        }
+      }
+
+      async function verifySignature(signature, messageBytes) {
+        if (
+          !signature ||
+          typeof signature.public_key !== "string" ||
+          typeof signature.signature !== "string"
+        ) {
+          return {
+            public_key: signature && signature.public_key,
+            signature: signature && signature.signature,
+            verified: false,
+            error:
+              "Signature entries must contain public_key and signature strings.",
+          };
+        }
+
+        try {
+          const publicKey = await crypto.subtle.importKey(
+            "raw",
+            base64ToBytes(signature.public_key),
+            "Ed25519",
+            false,
+            ["verify"],
+          );
+          const verified = await crypto.subtle.verify(
+            "Ed25519",
+            publicKey,
+            base64ToBytes(signature.signature),
+            messageBytes,
+          );
+          return { ...signature, verified };
+        } catch (error) {
+          return { ...signature, verified: false, error: error.message };
+        }
+      }
+
+      function base64ToBytes(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+      }
+
+      function renderSignatures(results) {
+        signaturesEl.textContent = "";
+        if (results.length === 0) {
+          signaturesEl.textContent = "No signatures found.";
+          return;
+        }
+
+        const list = document.createElement("ol");
+        for (const result of results) {
+          const item = document.createElement("li");
+
+          const resultText = document.createElement("p");
+          resultText.textContent = result.verified ? "Valid" : "Failed";
+          resultText.className = result.verified ? "ok" : "bad";
+          item.appendChild(resultText);
+
+          item.appendChild(keyValue("Public key", result.public_key || ""));
+          item.appendChild(keyValue("Signature", result.signature || ""));
+
+          if (result.error) {
+            const error = document.createElement("p");
+            error.textContent = result.error;
+            error.className = "bad";
+            item.appendChild(error);
+          }
+
+          list.appendChild(item);
+        }
+        signaturesEl.appendChild(list);
+      }
+
+      function renderData(data) {
+        dataEl.textContent = "";
+
+        for (const [key, value] of Object.entries(data)) {
+          const row = document.createElement("p");
+          const label = document.createElement("strong");
+          label.textContent = key + ": ";
+          row.appendChild(label);
+
+          if (typeof value === "string" && value.startsWith("data:image")) {
+            const image = document.createElement("img");
+            image.src = value;
+            image.alt = key;
+            row.appendChild(image);
+          } else {
+            const valueEl = document.createElement("span");
+            valueEl.className = "value";
+            valueEl.textContent = value === null ? "null" : String(value);
+            row.appendChild(valueEl);
+          }
+
+          dataEl.appendChild(row);
+        }
+      }
+
+      function keyValue(key, value) {
+        const paragraph = document.createElement("p");
+        const label = document.createElement("strong");
+        const text = document.createElement("span");
+        label.textContent = key + ": ";
+        text.className = "value";
+        text.textContent = value;
+        paragraph.append(label, text);
+        return paragraph;
+      }
+
+      function showError(message) {
+        clearResults();
+        statusEl.textContent = message;
+        statusEl.className = "bad";
+      }
+
+      function clearResults() {
+        statusEl.className = "";
+        signaturesEl.textContent = "";
+        dataEl.textContent = "";
+      }
+    </script>
+  </body>
+</html>
