@@ -23,6 +23,15 @@
         max-height: 240px;
       }
 
+      iframe {
+        display: block;
+        width: min(100%, 640px);
+        aspect-ratio: 16 / 9;
+        margin-top: 0.5rem;
+        border: 0;
+        background: #eee;
+      }
+
       .ok {
         color: green;
       }
@@ -266,7 +275,18 @@
           label.textContent = key + ": ";
           row.appendChild(label);
 
-          if (typeof value === "string" && value.startsWith("data:image")) {
+          const media = key === "media" ? resolveEmbeddedMedia(value) : null;
+          if (media) {
+            const iframe = document.createElement("iframe");
+            iframe.src = media.url;
+            iframe.title = media.title;
+            iframe.loading = "lazy";
+            iframe.allowFullscreen = true;
+            row.appendChild(iframe);
+          } else if (
+            typeof value === "string" &&
+            value.startsWith("data:image")
+          ) {
             const image = document.createElement("img");
             image.src = value;
             image.alt = key;
@@ -280,6 +300,27 @@
 
           dataEl.appendChild(row);
         }
+      }
+
+      function resolveEmbeddedMedia(value) {
+        if (typeof value !== "string") {
+          return null;
+        }
+        if (value.startsWith("youtube:")) {
+          return {
+            url:
+              "https://www.youtube.com/embed/" +
+              value.slice("youtube:".length),
+            title: "YouTube video",
+          };
+        }
+        if (value.startsWith("iframe:")) {
+          return {
+            url: value.slice("iframe:".length),
+            title: "Embedded media",
+          };
+        }
+        return null;
       }
 
       function keyValue(key, value) {
